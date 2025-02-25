@@ -12,6 +12,9 @@ device = 'cuda' if torch.cuda.is_available() else 'cpu'
 eval_iters = 200
 n_embd = 32
 
+n_head = 4
+dropout = 0.2
+
 
 # ------------
 
@@ -76,6 +79,8 @@ class Head(nn.Module):
         # Define the Value layer
         self.value = torch.nn.Linear(n_embd, head_size)
 
+        #Add the dropout 
+        self.dropout = nn.Dropout(p=dropout)
         
 
         ###
@@ -103,9 +108,101 @@ class Head(nn.Module):
 
         # Apply the softmax
         weight = torch.nn.functional.softmax(weights, dim=-1)
+        weight = self.dropout(weight)
         ###
         out = weight @ v # (B, T, T) @ (B, T, C) -> (B, T, C)
         return out
+    
+
+class FeedForward(nn.Module):
+    """ a simple MLP with RELU """
+
+    def __init__(self, n_embd):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(n_embd, n_embd),
+            nn.ReLU(),
+            nn.Dropout(p=dropout)
+        )
+
+    def forward(self, x):
+        return self.net(x)
+
+class LayerNorm(nn.Module):
+    def __init__(self, features, eps=1e-6):
+        super(LayerNorm, self).__init__()
+        self.a_2 = nn.Parameter(torch.ones(features))
+        self.b_2 = nn.Parameter(torch.zeros(features))
+        self.eps = eps
+
+    def forward(self, x):
+        mean = x.mean(-1, keepdim=True)
+        std = x.std(-1, keepdim=True)
+        return self.a_2 * (x - mean) / (std + self.eps) + self.b_2
+
+
+class MultiHeadAttention(nn.Module):
+    """ multiple heads of self-attention in parallel """
+
+    def __init__(self, num_heads, head_size):
+        super().__init__()
+        ## YOUR CODE HERE
+        ## list of num_heads modules of type Head
+        self.heads = nn.ModuleList([Head(head_size) for _ in range(num_heads)])
+        ###
+        
+    def forward(self, x):
+        ## YOUR CODE HERE
+        
+        ## apply each head in self.heads to x and concat the results 
+        out = torch.cat([h(x) for h in self.heads], dim=-1)
+
+        return out
+    
+
+class MultiHeadAttention(nn.Module):
+    """ multiple heads of self-attention in parallel """
+
+    def __init__(self, num_heads, head_size):
+        super().__init__()
+        ## YOUR CODE HERE
+        ## list of num_heads modules of type Head
+        self.heads = nn.ModuleList([Head(head_size) for _ in range(num_heads)])
+        self.dropout = nn.Dropout(0.2)
+        ###
+        
+    def forward(self, x):
+        ## YOUR CODE HEREs
+        
+        ## apply each head in self.heads to x and concat the results 
+        out = torch.cat([h(x) for h in self.heads], dim=-1)
+        out = self.dropout(out)
+        
+
+        return out
+    
+
+class Block(nn.Module):
+    """ A single bloc of multi-head attention """
+
+    def __init__(self, n_embd, n_head):
+        super().__init__()
+        head_size = n_embd // n_head
+        self.sa = MultiHeadAttention(n_head, head_size)
+        self.ffwd = FeedForward(n_embd)
+        self.ln1 = LayerNorm(n_embd)
+        self.ln2 = LayerNorm(n_embd)
+        self.ln3 = LayerNorm(n_embd)
+
+
+    def forward(self, x):
+        #x = self.sa(x)
+        x = x + self.sa(self.ln1(x))
+        x = x + self.ffwd(self.ln2(x))
+        x = self.ln3(x)
+        #x = self.ffwd(x)
+
+        return x
 
 
 class BigramLanguageModel(nn.Module):
@@ -114,7 +211,9 @@ class BigramLanguageModel(nn.Module):
         super().__init__()
         self.token_embedding_table = nn.Embedding(vocab_size, n_embd)
         self.position_embedding_table = nn.Embedding(block_size, n_embd)
-        self.sa_head = Head(n_embd)
+        self.mod = nn.Sequential(*[Block(n_embd, n_head=n_head) for _ in range(3)])
+        #self.sa_head = MultiHeadAttention(num_heads = n_head, head_size = n_embd // n_head)
+        #self.ff = FeedForward(n_embd)
         self.lm_head = nn.Linear(n_embd, vocab_size)
 
     def forward(self, idx, targets=None):
@@ -124,7 +223,9 @@ class BigramLanguageModel(nn.Module):
         tok_emb = self.token_embedding_table(idx) # (B,T,C)
         pos_emb = self.position_embedding_table(torch.arange(T, device=device)) # (T,C)
         x = tok_emb + pos_emb # (B,T,C)
-        x = self.sa_head(x) # (B,T,C)
+        x = self.mod(x) # apply blocks
+        #x = self.sa_head(x) # (B,T,C)
+        #x = self.ff(x) # (B,T,C)
         logits = self.lm_head(x) # (B,T,vocab_size)
 
         if targets is None:
@@ -178,6 +279,7 @@ for iter in range(max_iters):
     loss.backward()
     optimizer.step()
 
+    
 
 # generate from the model
 prompt = torch.tensor(encode(['\n']))
